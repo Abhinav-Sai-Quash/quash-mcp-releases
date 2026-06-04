@@ -1,168 +1,151 @@
-#!/usr/bin/env bash
-# Quash MCP installer — run this once to set up the Quash automation engine.
+#!/bin/sh
+# Quash MCP installer — end users run:
+#   curl -fsSL https://raw.githubusercontent.com/Abhinav-Sai-Quash/quash-mcp-releases/main/install.sh | sh
 #
-#   curl -fsSL https://get.quash.ai/install.sh | sh
+# Installs three things to ~/.quash:
+#   bin/quash-mcp        single-file MCP server binary
+#   bin/quash-sidecar    single-file automation engine (execution + reports)
+#   test-gen-venv/       Python venv with the test-gen agent (needs Python 3.11+)
+# …then registers the `quash` server in your MCP client configs.
 #
-# What it does:
-#   1. Detects OS + architecture.
-#   2. Downloads quash-mcp and quash-sidecar to ~/.quash/bin/.
-#   3. Auto-registers the MCP server in every supported client config it finds
-#      (Claude Desktop, Cursor).
-#
-# Requirements:
-#   - macOS 13+ (arm64 or x86_64) or Linux x86_64
-#   - curl
-#   - adb on PATH (for device automation)
-set -euo pipefail
+# Env overrides: QUASH_VERSION (default: latest), QUASH_BACKEND_URL (default: prod).
+set -eu
 
-# ── config ────────────────────────────────────────────────────────────────────
+REPO="Abhinav-Sai-Quash/quash-mcp-releases"
 QUASH_HOME="${QUASH_HOME:-$HOME/.quash}"
-BIN_DIR="$QUASH_HOME/bin"
-RELEASES_REPO="Abhinav-Sai-Quash/quash-mcp-releases"
-BASE_URL="${QUASH_DOWNLOAD_BASE:-https://github.com/${RELEASES_REPO}/releases/download}"
-VERSION="${QUASH_VERSION:-v0.1.0}"
+BIN="$QUASH_HOME/bin"
+VENV="$QUASH_HOME/test-gen-venv"
+BACKEND_URL="${QUASH_BACKEND_URL:-https://zenith.quashbugs.com}"
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-info()    { printf '\033[0;32m[quash]\033[0m %s\n' "$*"; }
-warn()    { printf '\033[0;33m[quash]\033[0m %s\n' "$*"; }
-error()   { printf '\033[0;31m[quash]\033[0m ERROR: %s\n' "$*" >&2; exit 1; }
-success() { printf '\033[0;36m[quash]\033[0m %s\n' "$*"; }
+say()  { printf '[quash] %s\n' "$*"; }
+die()  { printf '[quash] ERROR: %s\n' "$*" >&2; exit 1; }
 
-require_cmd() {
-  command -v "$1" &>/dev/null || error "'$1' not found. Install it and retry."
-}
+# ── 1. platform ──────────────────────────────────────────────────────────────
+OS="$(uname -s)"; ARCH="$(uname -m)"
+case "$OS-$ARCH" in
+  Darwin-arm64)  PLAT="darwin-arm64" ;;
+  Darwin-x86_64) PLAT="darwin-x86_64" ;;
+  Linux-x86_64)  PLAT="linux-x86_64" ;;
+  *) die "unsupported platform: $OS-$ARCH" ;;
+esac
+say "Platform: $PLAT"
 
-# ── detect platform ───────────────────────────────────────────────────────────
-detect_platform() {
-  local os arch
-  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  arch="$(uname -m)"
-  case "$arch" in
-    x86_64|amd64)  arch="x86_64" ;;
-    arm64|aarch64) arch="arm64" ;;
-    *) error "Unsupported architecture: $arch" ;;
-  esac
-  case "$os" in
-    darwin) echo "darwin-${arch}" ;;
-    linux)  echo "linux-${arch}" ;;
-    *) error "Unsupported OS: $os" ;;
-  esac
-}
+# ── 2. resolve version ───────────────────────────────────────────────────────
+VERSION="${QUASH_VERSION:-}"
+if [ -z "$VERSION" ]; then
+  VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+    | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$VERSION" ] || die "could not determine latest release tag (set QUASH_VERSION=vX.Y.Z)"
+fi
+say "Version: $VERSION"
+DL="https://github.com/$REPO/releases/download/$VERSION"
 
-# ── download binary ───────────────────────────────────────────────────────────
-download_binary() {
-  local name="$1"
-  local platform="$2"
-  local dest="$3"
-  local url
+mkdir -p "$BIN"
+fetch() { curl -fSL --progress-bar "$1" -o "$2" || die "download failed: $1"; }
 
-  # Asset naming: {name}-{platform}  e.g. quash-mcp-darwin-arm64
-  url="${BASE_URL}/${VERSION}/${name}-${platform}"
+# ── 3. binaries (single-file) ────────────────────────────────────────────────
+say "Downloading quash-mcp ..."
+fetch "$DL/quash-mcp-$PLAT" "$BIN/quash-mcp"
+say "Downloading quash-sidecar ..."
+fetch "$DL/quash-sidecar-$PLAT" "$BIN/quash-sidecar"
+chmod +x "$BIN/quash-mcp" "$BIN/quash-sidecar"
 
-  info "Downloading ${name} ..."
-  if command -v curl &>/dev/null; then
-    curl -fsSL --progress-bar -o "$dest" "$url" || error "Download failed: $url"
-  elif command -v wget &>/dev/null; then
-    wget -q --show-progress -O "$dest" "$url" || error "Download failed: $url"
-  else
-    error "Neither curl nor wget found."
-  fi
-  chmod +x "$dest"
-}
+# config (best-effort — sidecar falls back to its bundled config if absent)
+curl -fsSL "$DL/config.yaml" -o "$QUASH_HOME/config.yaml" 2>/dev/null || true
+if curl -fsSL "$DL/config-data.tar.gz" -o "$QUASH_HOME/config-data.tar.gz" 2>/dev/null; then
+  tar -xzf "$QUASH_HOME/config-data.tar.gz" -C "$QUASH_HOME" && rm -f "$QUASH_HOME/config-data.tar.gz"
+fi
 
-# ── register MCP client ───────────────────────────────────────────────────────
-# Writes / merges the quash entry into an MCP JSON config file.
-register_mcp_config() {
-  local config_path="$1"
-  local dir
-  dir="$(dirname "$config_path")"
-
-  if [[ ! -d "$dir" ]]; then
-    info "  $config_path — client dir not found, skipping."
-    return
-  fi
-
-  local entry
-  entry="$(cat <<JSON
-{
-  "type": "stdio",
-  "command": "${BIN_DIR}/quash-mcp",
-  "env": {
-    "QUASH_SIDECAR_CMD": "${BIN_DIR}/quash-sidecar"
+# ── 4. de-quarantine + ad-hoc sign (macOS) ───────────────────────────────────
+# Downloaded files are quarantined; strip it so they launch. (Proper public
+# distribution should ship Developer-ID-signed + NOTARIZED binaries instead.)
+if [ "$OS" = "Darwin" ]; then
+  xattr -dr com.apple.quarantine "$BIN/quash-mcp" "$BIN/quash-sidecar" 2>/dev/null || true
+  command -v codesign >/dev/null 2>&1 && {
+    codesign --force --sign - "$BIN/quash-mcp" 2>/dev/null || true
+    codesign --force --sign - "$BIN/quash-sidecar" 2>/dev/null || true
   }
-}
-JSON
+fi
+
+# ── 5. test-gen venv (needs Python 3.11+) ────────────────────────────────────
+TEST_GEN_CMD=""
+PY="$(command -v python3 || true)"
+PY_OK=0
+if [ -n "$PY" ]; then
+  "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' && PY_OK=1
+fi
+if [ "$PY_OK" = "1" ]; then
+  say "Setting up test-gen (Python venv) ..."
+  # fetch the wheel asset's download URL from the release (wheel name carries a version)
+  WHEEL_URL="$("$PY" - "$REPO" "$VERSION" <<'PYEOF'
+import json, sys, urllib.request
+repo, ver = sys.argv[1], sys.argv[2]
+u = f"https://api.github.com/repos/{repo}/releases/tags/{ver}"
+data = json.load(urllib.request.urlopen(u))
+for a in data.get("assets", []):
+    if a["name"].endswith(".whl"):
+        print(a["browser_download_url"]); break
+PYEOF
 )"
-
-  if [[ ! -f "$config_path" ]]; then
-    # Create a fresh config with just the quash entry.
-    printf '{\n  "mcpServers": {\n    "quash": %s\n  }\n}\n' "$entry" > "$config_path"
-    info "  Created $config_path"
-    return
-  fi
-
-  # Merge: add / overwrite the "quash" key inside mcpServers.
-  if command -v python3 &>/dev/null; then
-    python3 - "$config_path" "$entry" <<'PY'
-import json, sys
-path = sys.argv[1]
-new_entry = json.loads(sys.argv[2])
-with open(path) as f:
-    cfg = json.load(f)
-cfg.setdefault("mcpServers", {})["quash"] = new_entry
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-print(f"  Updated {path}")
-PY
+  if [ -n "$WHEEL_URL" ]; then
+    fetch "$WHEEL_URL" "$QUASH_HOME/test-gen.whl"
+    [ -d "$VENV" ] || "$PY" -m venv "$VENV"
+    "$VENV/bin/pip" install -q --upgrade pip
+    "$VENV/bin/pip" install -q "$QUASH_HOME/test-gen.whl" && rm -f "$QUASH_HOME/test-gen.whl"
+    TEST_GEN_CMD="$VENV/bin/python -m test_gen_agent"
+    say "test-gen ready."
   else
-    warn "  python3 not found — skipping config merge for $config_path."
-    warn "  Manually add the quash server to the mcpServers section:"
-    printf '    "quash": %s\n' "$entry"
+    say "WARN: no test-gen wheel in this release — test-case generation will be unavailable."
   fi
+else
+  say "WARN: Python 3.11+ not found — skipping test-gen setup (execution still works)."
+  say "      Install Python 3.11+ and re-run to enable test-case generation."
+fi
+
+# ── 6. register the MCP server in client configs ─────────────────────────────
+say "Registering MCP clients ..."
+register() {  # $1 = config file path
+  cfg="$1"; dir="$(dirname "$cfg")"
+  [ -d "$dir" ] || { printf '[quash]   %s — client dir not found, skipping.\n' "$cfg"; return; }
+  MCP_BIN="$BIN/quash-mcp" SIDECAR="$BIN/quash-sidecar" TGCMD="$TEST_GEN_CMD" \
+  BACKEND="$BACKEND_URL" CFG="$cfg" "$PY" - <<'PYEOF' 2>/dev/null || printf '[quash]   %s — could not update.\n' "$cfg"
+import json, os, pathlib
+cfg = pathlib.Path(os.environ["CFG"])
+d = json.loads(cfg.read_text()) if cfg.exists() else {}
+servers = d.setdefault("mcpServers", {})
+env = {
+    "QUASH_SIDECAR_CMD": os.environ["SIDECAR"],
+    "QUASH_BACKEND_URL": os.environ["BACKEND"],
 }
-
-# ── main ──────────────────────────────────────────────────────────────────────
-main() {
-  require_cmd curl
-
-  PLATFORM="$(detect_platform)"
-  info "Platform: $PLATFORM"
-
-  # Create ~/.quash/bin
-  mkdir -p "$BIN_DIR"
-
-  # Download both binaries
-  download_binary "quash-mcp"     "$PLATFORM" "$BIN_DIR/quash-mcp"
-  download_binary "quash-sidecar" "$PLATFORM" "$BIN_DIR/quash-sidecar"
-
-  # Register in known MCP clients
-  info "Registering MCP clients ..."
-
-  # Claude Code (user-level, works in any project)
-  register_mcp_config "$HOME/.claude.json"
-
-  # Claude Desktop (macOS)
-  register_mcp_config "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
-
-  # Claude Desktop (Linux)
-  register_mcp_config "$HOME/.config/Claude/claude_desktop_config.json"
-
-  # Cursor
-  register_mcp_config "$HOME/.cursor/mcp.json"
-
-  echo ""
-  success "Quash MCP installed to $BIN_DIR"
-  echo ""
-  echo "  Next steps:"
-  echo "  1. Restart your MCP client (Claude Desktop / Cursor / Claude Code)."
-  echo "  2. Ask Claude: 'Use Quash and run the auth tool' to sign in."
-  echo "  3. Ask Claude: 'Use Quash and run the build tool' to verify your setup."
-  echo ""
-  echo "  To update: run this script again (it overwrites existing binaries)."
-  echo "  To uninstall: rm -rf $QUASH_HOME and remove the 'quash' entry from"
-  echo "  your MCP client config."
-  echo ""
+if os.environ.get("TGCMD"):
+    env["QUASH_TEST_GEN_AGENT_CMD"] = os.environ["TGCMD"]
+servers["quash"] = {"type": "stdio", "command": os.environ["MCP_BIN"], "env": env}
+cfg.parent.mkdir(parents=True, exist_ok=True)
+cfg.write_text(json.dumps(d, indent=2))
+print(f"  Updated {cfg}")
+PYEOF
 }
+# python3 is required to register; if absent we still installed the binaries.
+if [ -n "$PY" ]; then
+  register "$HOME/.claude.json"                                                       # Claude Code
+  register "$HOME/Library/Application Support/Claude/claude_desktop_config.json"       # Claude Desktop (macOS)
+  register "$HOME/.config/Claude/claude_desktop_config.json"                           # Claude Desktop (Linux)
+  register "$HOME/.cursor/mcp.json"                                                    # Cursor
+else
+  say "WARN: python3 not found — installed binaries but could not auto-register MCP clients."
+fi
 
-main "$@"
+cat <<EOF
+
+[quash] Quash MCP installed to $BIN
+
+  Next steps:
+  1. Restart your MCP client (Claude Desktop / Cursor / Claude Code).
+  2. Generate an MCP token in the Quash desktop app (Settings → MCP / API Token).
+  3. Ask Claude: 'Use Quash and run the auth tool with my token' to sign in.
+  4. Ask Claude: 'Use Quash and run the build tool' to verify your setup.
+
+  Backend: $BACKEND_URL  (override with QUASH_BACKEND_URL)
+  Update:  re-run this script.  Uninstall: rm -rf $QUASH_HOME and remove the
+           'quash' entry from your MCP client config.
+EOF
