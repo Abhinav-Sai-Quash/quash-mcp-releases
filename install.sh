@@ -43,6 +43,23 @@ DL="https://github.com/$REPO/releases/download/$VERSION"
 mkdir -p "$BIN"
 fetch() { curl -fSL --progress-bar "$1" -o "$2" || die "download failed: $1"; }
 
+SIDECAR_DIR="$QUASH_HOME/sidecar"
+SIDECAR_BIN="$SIDECAR_DIR/quash-sidecar/quash-sidecar"
+STAMP="$QUASH_HOME/.installed-version"
+PY="$(command -v python3 || true)"
+TEST_GEN_CMD=""
+
+# ── idempotent re-install ────────────────────────────────────────────────────
+# If this EXACT version is already installed, skip the heavy download + extract +
+# prime + venv-build and just refresh the client config (so a re-run with a new
+# QUASH_API_TOKEN / QUASH_BACKEND_URL still applies instantly). QUASH_FORCE=1
+# forces a full reinstall.
+if [ "${QUASH_FORCE:-0}" != "1" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$VERSION" ] \
+   && [ -x "$BIN/quash-mcp" ] && [ -x "$SIDECAR_BIN" ]; then
+  say "$VERSION already installed — refreshing config only (QUASH_FORCE=1 to reinstall)."
+  [ -x "$VENV/bin/python" ] && TEST_GEN_CMD="$VENV/bin/python -m test_gen_agent"
+else
+
 # ── 3. binaries ──────────────────────────────────────────────────────────────
 # quash-mcp is a single-file binary (small, fast). quash-sidecar ships as an
 # onedir tarball (~479M of engine deps) extracted ONCE here, so it boots in
@@ -125,6 +142,9 @@ else
   say "WARN: Python 3.11+ not found — skipping test-gen setup (execution still works)."
   say "      Install Python 3.11+ and re-run to enable test-case generation."
 fi
+
+echo "$VERSION" > "$STAMP"   # stamp so a same-version re-run skips the above
+fi  # ── end idempotent-install guard ──
 
 # ── 6. register the MCP server in client configs ─────────────────────────────
 say "Registering MCP clients ..."
