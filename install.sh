@@ -176,9 +176,10 @@ cat <<EOF
 [quash] Quash MCP installed to $BIN
 
   Recommended (no agent needed for auth):
-    Generate a token in the Quash desktop app (Settings → MCP / API Token), then:
-      QUASH_API_TOKEN=qsh_... QUASH_BACKEND_URL=$BACKEND_URL \\
-        curl -fsSL <this-install-url> | sh
+    Generate a token in the Quash desktop app (Settings → MCP / API Token), then
+    re-run with the vars on 'sh' (NOT on curl — a prefix on curl is ignored):
+      curl -fsSL <this-install-url> \\
+        | QUASH_API_TOKEN=qsh_... QUASH_BACKEND_URL=$BACKEND_URL sh
     The token is stored in your client config's env; the MCP authenticates from it
     on startup — the credential never passes through the agent or chat.
 
