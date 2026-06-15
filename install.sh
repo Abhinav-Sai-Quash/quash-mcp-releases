@@ -85,6 +85,12 @@ if curl -fsSL "$DL/config-data.tar.gz" -o "$QUASH_HOME/config-data.tar.gz" 2>/de
   tar -xzf "$QUASH_HOME/config-data.tar.gz" -C "$QUASH_HOME" && rm -f "$QUASH_HOME/config-data.tar.gz"
 fi
 
+# Portal APK — the on-device accessibility component the setup_portal tool installs.
+mkdir -p "$QUASH_HOME/portal"
+if curl -fsSL "$DL/mahoraga-portal.apk" -o "$QUASH_HOME/portal/mahoraga-portal.apk" 2>/dev/null; then
+  curl -fsSL "$DL/portal-version" -o "$QUASH_HOME/portal/portal-version" 2>/dev/null || true
+fi
+
 # ── 4. de-quarantine + ad-hoc sign (macOS) ───────────────────────────────────
 # Downloaded files are quarantined; strip it so they launch. (Proper public
 # distribution should ship Developer-ID-signed + NOTARIZED binaries instead.)
