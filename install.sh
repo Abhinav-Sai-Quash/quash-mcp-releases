@@ -91,6 +91,11 @@ if curl -fsSL "$DL/mahoraga-portal.apk" -o "$QUASH_HOME/portal/mahoraga-portal.a
   curl -fsSL "$DL/portal-version" -o "$QUASH_HOME/portal/portal-version" 2>/dev/null || true
 fi
 
+# WebDriverAgent project — built by setup_simulator for iOS simulators (optional;
+# only present from v1.1.0+). Extracts to ~/.quash/wda/WebDriverAgent.xcodeproj.
+mkdir -p "$QUASH_HOME/wda"
+curl -fsSL "$DL/webdriveragent.tar.gz" 2>/dev/null | tar -xz -C "$QUASH_HOME/wda" 2>/dev/null || true
+
 # ── 4. de-quarantine + ad-hoc sign (macOS) ───────────────────────────────────
 # Downloaded files are quarantined; strip it so they launch. (Proper public
 # distribution should ship Developer-ID-signed + NOTARIZED binaries instead.)
